@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Local environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.netrc
+service-account*.json
+credentials*.json
+
+# Editors and notebooks
+.vscode/
+.idea/
+.ipynb_checkpoints/
+*~
+
+# Externally supplied models, meshes, and FoundationPose checkouts
+models/**
+!models/README.md
+FoundationPose/
+foundationpose_weights/
+weights/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+
+# Recorded data and RealSense captures
+data/
+datasets/
+recordings/
+episodes/
+*.bag
+
+# Generated experiments and reports
+results/
+outputs/
+runs/
+fp_output/
+comparison_output/
+debug/
+tracking*.mp4
+*.tmp
+*.log
+
+# Native/CUDA build products
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.so
+*.a
+*.cu.o

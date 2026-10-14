@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kuka-offline-perception"
+version = "0.1.0"
+description = "ROS-independent offline RGB-D object-pose perception"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23", "opencv-python>=4.7", "PyYAML>=6"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+yolo = ["ultralytics>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
