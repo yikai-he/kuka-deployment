@@ -48,6 +48,13 @@ class FoundationPoseEstimator:
 
     def __init__(self, config: FoundationPoseConfig) -> None:
         self.config = config
+        self.dtype_diagnostics: dict[str, object] = {
+            "register_calls": 0,
+            "track_calls": 0,
+            "register_input_dtypes": [],
+            "track_input_dtypes": [],
+            "output_dtypes": [],
+        }
         for name, path in (("repository", config.repository), ("mesh", config.mesh),
                            ("weights", config.weights)):
             if not path.exists():
@@ -79,21 +86,41 @@ class FoundationPoseEstimator:
                     debug=0, glctx=glctx,
                 )
                 self._estimator.diameter = np.float32(self._estimator.diameter)
+                self.dtype_diagnostics.update({
+                    "mesh_vertices_dtype": str(mesh.vertices.dtype),
+                    "mesh_vertex_normals_dtype": str(mesh.vertex_normals.dtype),
+                    "diameter_dtype": str(np.asarray(self._estimator.diameter).dtype),
+                })
         except Exception as exc:
             raise RuntimeError(f"FoundationPose initialization failed: {exc}") from exc
 
     def register(self, frame: RGBDFrame, mask: np.ndarray) -> np.ndarray:
         try:
+            self.dtype_diagnostics["register_calls"] = int(
+                self.dtype_diagnostics["register_calls"]) + 1
+            self.dtype_diagnostics["register_input_dtypes"].append({
+                "K": str(frame.K.dtype), "rgb": str(frame.rgb.dtype),
+                "depth": str(frame.depth_m.dtype), "mask": str(np.asarray(mask).dtype),
+            })
             pose = self._estimator.register(K=frame.K, rgb=frame.rgb, depth=frame.depth_m,
                                             ob_mask=mask, iteration=self.config.register_iterations)
-            return np.asarray(pose, dtype=np.float32).reshape(4, 4)
+            result = np.asarray(pose, dtype=np.float32).reshape(4, 4)
+            self.dtype_diagnostics["output_dtypes"].append(str(result.dtype))
+            return result
         except Exception as exc:
             raise RuntimeError(f"FoundationPose registration failed: {exc}") from exc
 
     def track(self, frame: RGBDFrame) -> np.ndarray:
         try:
+            self.dtype_diagnostics["track_calls"] = int(self.dtype_diagnostics["track_calls"]) + 1
+            self.dtype_diagnostics["track_input_dtypes"].append({
+                "K": str(frame.K.dtype), "rgb": str(frame.rgb.dtype),
+                "depth": str(frame.depth_m.dtype),
+            })
             pose = self._estimator.track_one(rgb=frame.rgb, depth=frame.depth_m, K=frame.K,
                                              iteration=self.config.track_iterations)
-            return np.asarray(pose, dtype=np.float32).reshape(4, 4)
+            result = np.asarray(pose, dtype=np.float32).reshape(4, 4)
+            self.dtype_diagnostics["output_dtypes"].append(str(result.dtype))
+            return result
         except Exception as exc:
             raise RuntimeError(f"FoundationPose tracking failed: {exc}") from exc

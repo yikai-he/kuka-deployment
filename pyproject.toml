@@ -16,6 +16,7 @@ yolo = ["ultralytics>=8"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = ["gpu_integration: opt-in test requiring CUDA, real models, and the KUKA dataset"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

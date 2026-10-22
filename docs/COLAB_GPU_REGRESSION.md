@@ -172,6 +172,61 @@ Modular:
 Use a fresh output directory for each run. Do not use different frames, masks,
 intrinsics, meshes, weights, or iteration counts.
 
+### Opt-in pytest regression
+
+The repository also provides a single opt-in integration test which runs the
+modular replay, validates all 429 serialized poses, verifies the FoundationPose
+float32 compatibility observations from real `register()` and `track_one()` calls,
+and compares the result with the saved baseline. Ordinary `pytest` runs skip it.
+
+After preparing `/content/perception_v7_effective.yaml` as described above, choose
+a new output directory and set the paths from the mounted Drive session:
+
+```python
+import os
+
+os.environ.update({
+    "KUKA_GPU_REGRESSION": "1",
+    "KUKA_GPU_DATASET": str(EPISODE),
+    "KUKA_GPU_CONFIG": "/content/perception_v7_effective.yaml",
+    "KUKA_GPU_BASELINE": str(RESULT_ROOT / "legacy_v7_result"),
+    "KUKA_GPU_BASELINE_KIND": "legacy",
+    "KUKA_GPU_OUTPUT": "/content/modular_gpu_regression",
+    "KUKA_GPU_TRANSLATION_TOLERANCE_M": "0.005",
+    "KUKA_GPU_ROTATION_TOLERANCE_DEG": "2.0",
+    "KUKA_GPU_FAIL_ON_DEVIATION": "1",
+})
+```
+
+Run the CPU suite first, then the explicitly selected GPU test with the same Conda
+Python used to build FoundationPose:
+
+```bash
+!/opt/conda/envs/foundationpose/bin/python -m pytest -q \
+  /content/kuka-deployment/tests -m "not gpu_integration"
+!/opt/conda/envs/foundationpose/bin/python -m pytest -q -s \
+  /content/kuka-deployment/tests/test_gpu_integration.py -m gpu_integration
+```
+
+`KUKA_GPU_BASELINE` must contain `poses.csv` and `poses.npy`. Set
+`KUKA_GPU_BASELINE_KIND=modular` only when the saved baseline uses the modular CSV
+schema. Keep `KUKA_GPU_FAIL_ON_DEVIATION=1` for a gating regression. Setting it to
+`0` is useful only for characterization on hardware other than the validated T4;
+all detected differences are still written to the manifest.
+
+The test writes the following under `KUKA_GPU_OUTPUT`:
+
+- normal replay outputs (`poses.npy`, `poses.csv`, `metrics.json`, effective config);
+- `preflight.json`, including CUDA, NVIDIA GPU, dataset, intrinsics, asset, mesh-scale,
+  iteration-count, and pinned FoundationPose-commit checks;
+- `reproducibility_manifest.json`, including versions, paths, hashes, effective
+  configuration, real FoundationPose dtype observations, and all deviations;
+- `baseline_comparison.json` and `baseline_comparison.md`.
+
+Copy that entire directory to `RESULT_ROOT` after the run. The test hashes the mesh,
+YOLO weights, and FoundationPose `.pth` files, so manifest generation can take some
+time on Drive-backed storage.
+
 ## 7. Compare on CPU and save reports
 
 ```bash

@@ -21,6 +21,7 @@ from kuka_deployment.perception.segmenter import (
     MaskValidationConfig, RedCubeCandidateConfig, YoloSegmenter,
 )
 from kuka_deployment.perception.sources import RecordedSequenceSource
+from kuka_deployment.perception.regression import reproducibility_manifest, write_json
 from kuka_deployment.perception.tracker import (
     PerceptionPipeline, PipelineConfig, PoseValidationConfig, RecoveryConfig,
 )
@@ -32,6 +33,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--save-visualization", action="store_true")
+    parser.add_argument("--save-reproducibility-manifest", action="store_true")
     return parser.parse_args()
 
 
@@ -177,6 +179,11 @@ def main() -> int:
                               for status in sorted({row["status"] for row in rows})}}, stream, indent=2)
     with (args.output / "config.yaml").open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
+    if args.save_reproducibility_manifest:
+        write_json(
+            args.output / "reproducibility_manifest.json",
+            reproducibility_manifest(args.config, args.input, estimator.dtype_diagnostics),
+        )
     return 0
 
 

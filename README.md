@@ -167,6 +167,11 @@ rotations modulo the cube's 24 proper rotational symmetries rather than raw matr
 distance. Exact event parity is expected where deliberate fixes do not apply;
 floating-point trajectories require tolerances established on the actual GPU.
 
+The same document includes an opt-in `gpu_integration` pytest invocation for the
+429-frame task1/episode_000 regression. It is skipped unless
+`KUKA_GPU_REGRESSION=1` and explicit dataset, config, baseline, and output paths are
+provided. The test uses this replay CLI rather than implementing a second pipeline.
+
 ## Deliberate deviations and remaining limits
 
 - Invalid SE(3), premature tracking, LOST-state tracking, and stale-pose output are
