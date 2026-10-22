@@ -226,3 +226,28 @@ def test_15_lost_hint_expands_then_falls_back_without_hint():
         masks, np.array([0.9]), np.array([0]), item, config, hint_uv=(0, 0), lost_streak=3)
     assert selected_1 is None and candidates_1[0]["allowed_hint_px"] == 15
     assert selected_3 is not None and selected_3.metadata["fallback_without_hint"] is True
+
+
+def test_16_recovery_disabled_distinguishes_failure_from_lost_skip():
+    config = PoseValidationConfig(max_translation_step_m=0.02, center_depth_residual_m=0)
+    tracker, _, estimator = pipeline(
+        [DETECTION], [pose()], [pose(0.0228023)], pose_config=config,
+        recovery=RecoveryConfig(enabled=False),
+    )
+    tracker.process_frame(frame(0))
+
+    failed = tracker.process_frame(frame(328))
+    assert not failed.valid and failed.status is TrackingStatus.TRACKING_FAILED
+    assert failed.failure_reason == "translation jump exceeded configured threshold"
+    assert tracker.last_diagnostics["failure_stage"] == "tracking_validation"
+    assert tracker.last_diagnostics["step_translation_m"] == np.float32(0.0228023)
+    assert tracker.state is TrackerState.LOST
+    assert estimator.track_calls == 1
+
+    skipped = tracker.process_frame(frame(329))
+    assert not skipped.valid and skipped.status is TrackingStatus.TRACKING_FAILED
+    assert skipped.failure_reason == "recovery disabled while tracker is LOST"
+    assert tracker.last_diagnostics["failure_stage"] == "lost_recovery_disabled"
+    assert tracker.last_diagnostics["recovery_attempted"] is False
+    assert tracker.lost_streak == 2
+    assert estimator.track_calls == 1

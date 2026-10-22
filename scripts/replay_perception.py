@@ -115,6 +115,7 @@ def main() -> int:
                 "valid": result.valid, "status": result.status.value,
                 "detector_confidence": result.detector_confidence,
                 "failure_reason": result.failure_reason, "inference_ms": elapsed_ms,
+                "failure_stage": pipeline.last_diagnostics.get("failure_stage"),
                 "recovery_attempted": pipeline.last_diagnostics.get("recovery_attempted", False),
                 "recovery_success": pipeline.last_diagnostics.get("recovery_success", False),
                 "tracker_state": pipeline.last_diagnostics.get("state"),

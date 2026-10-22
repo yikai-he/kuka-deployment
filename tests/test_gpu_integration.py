@@ -73,8 +73,8 @@ def test_task1_episode_000_gpu_regression(monkeypatch):
     manifest_path = output / "reproducibility_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     dtypes = manifest["foundationpose_dtype_diagnostics"]
-    assert dtypes["mesh_vertices_dtype"] == "float32"
-    assert dtypes["mesh_vertex_normals_dtype"] == "float32"
+    assert dtypes["model_pts_dtype"] == "float32"
+    assert dtypes["model_normals_dtype"] == "float32"
     assert dtypes["diameter_dtype"] == "float32"
     assert dtypes["register_calls"] >= 1
     assert dtypes["track_calls"] >= 1

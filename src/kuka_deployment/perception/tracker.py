@@ -264,12 +264,14 @@ class PerceptionPipeline:
 
     def process_frame(self, frame: RGBDFrame) -> ObjectPoseEstimate:
         self.last_diagnostics = {"recovery_attempted": False, "recovery_success": False,
-                                 "depth_check_status": DepthCheckStatus.UNAVAILABLE.value}
+                                 "depth_check_status": DepthCheckStatus.UNAVAILABLE.value,
+                                 "failure_stage": None}
         if self.state is TrackerState.UNINITIALIZED:
             return self._register(frame, recovery=False)
         if self.state is TrackerState.LOST:
             if not self.config.recovery.enabled:
                 self.lost_streak += 1
+                self.last_diagnostics["failure_stage"] = "lost_recovery_disabled"
                 return self._result(frame, TrackingStatus.TRACKING_FAILED, None,
                                     reason="recovery disabled while tracker is LOST")
             return self.try_reregister(frame)
@@ -280,8 +282,10 @@ class PerceptionPipeline:
             failed, reason = detect_tracking_failure(
                 candidate, self._last_accepted_pose, self.config.pose, frame=frame,
                 cooldown_remaining=self.cooldown_remaining, diagnostics=self.last_diagnostics)
+            failure_stage = "tracking_validation"
         except Exception as exc:
             failed, reason = True, str(exc)
+            failure_stage = "tracking_exception"
         if not failed:
             self._tracking_pose = candidate.copy()
             self._last_accepted_pose = candidate.copy()
@@ -290,6 +294,7 @@ class PerceptionPipeline:
             return self._result(frame, TrackingStatus.TRACKED, self._tracking_pose)
         if not self.config.recovery.enabled:
             self._enter_lost()
+            self.last_diagnostics["failure_stage"] = failure_stage
             return self._result(frame, TrackingStatus.TRACKING_FAILED, None, reason=reason)
         recovered = self.try_reregister(frame)
         if recovered.valid:

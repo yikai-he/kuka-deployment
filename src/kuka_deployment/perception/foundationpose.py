@@ -76,12 +76,16 @@ class FoundationPoseEstimator:
             with _working_directory(config.repository):
                 from estimater import FoundationPose, PoseRefinePredictor, ScorePredictor
                 mesh = trimesh.load(str(config.mesh.resolve()), force="mesh")
-                mesh.vertices = np.asarray(mesh.vertices, dtype=np.float32)
-                mesh.vertex_normals = np.asarray(mesh.vertex_normals, dtype=np.float32)
+                # Trimesh deliberately stores geometry as float64, including values
+                # assigned from float32 arrays.  Keep that native representation for
+                # the mesh object while passing explicit float32 model arrays across
+                # the FoundationPose boundary.
+                model_pts = np.ascontiguousarray(mesh.vertices, dtype=np.float32)
+                model_normals = np.ascontiguousarray(mesh.vertex_normals, dtype=np.float32)
                 scorer, refiner = ScorePredictor(), PoseRefinePredictor()
                 glctx = dr.RasterizeCudaContext()
                 self._estimator = FoundationPose(
-                    model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
+                    model_pts=model_pts, model_normals=model_normals, mesh=mesh,
                     scorer=scorer, refiner=refiner, debug_dir=str(config.debug_dir),
                     debug=0, glctx=glctx,
                 )
@@ -89,6 +93,8 @@ class FoundationPoseEstimator:
                 self.dtype_diagnostics.update({
                     "mesh_vertices_dtype": str(mesh.vertices.dtype),
                     "mesh_vertex_normals_dtype": str(mesh.vertex_normals.dtype),
+                    "model_pts_dtype": str(model_pts.dtype),
+                    "model_normals_dtype": str(model_normals.dtype),
                     "diameter_dtype": str(np.asarray(self._estimator.diameter).dtype),
                 })
         except Exception as exc:
