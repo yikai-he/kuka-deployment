@@ -20,11 +20,17 @@ env/
 .netrc
 service-account*.json
 credentials*.json
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+.aws/
 
 # Editors and notebooks
 .vscode/
 .idea/
 .ipynb_checkpoints/
+kuka_deployment_refactored*.ipynb
 *~
 
 # Externally supplied models, meshes, and FoundationPose checkouts
@@ -38,6 +44,9 @@ weights/
 *.ckpt
 *.onnx
 *.engine
+*.obj
+*.ply
+*.stl
 
 # Recorded data and RealSense captures
 data/
@@ -50,10 +59,18 @@ episodes/
 results/
 outputs/
 runs/
+artifacts/
+checkpoints/
+experiments/
 fp_output/
 comparison_output/
 debug/
 tracking*.mp4
+*.npy
+*.npz
+*.mp4
+*.avi
+*.mkv
 *.tmp
 *.log
 

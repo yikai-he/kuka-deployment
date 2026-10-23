@@ -1,0 +1,13 @@
+diff --git a/nvdiffrast/torch/ops.py b/nvdiffrast/torch/ops.py
+index e717fd0..cc31b79 100644
+--- a/nvdiffrast/torch/ops.py
++++ b/nvdiffrast/torch/ops.py
+@@ -82,5 +82,6 @@ def _get_plugin(gl=False):
+             'torch_texture.cpp',
+             'torch_antialias.cpp',
+         ]
+-    # Some containers set this to contain old architectures that won't compile. We only need the one installed in the machine.
+-    os.environ['TORCH_CUDA_ARCH_LIST'] = ''
++    # Preserve an explicitly configured architecture list. This permits a
++    # prebuilt container extension to target more than the build host's GPU.
++    # PyTorch retains its normal auto-detection behavior when the variable is unset.
