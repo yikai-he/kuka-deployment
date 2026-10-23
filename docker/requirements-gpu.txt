@@ -7,7 +7,7 @@ scikit-learn==1.6.1
 h5py==3.13.0
 joblib==1.4.2
 PyYAML==6.0.2
-ruamel.yaml==0.18.10
+ruamel.yaml==0.17.40
 opencv-python==4.10.0.84
 imageio==2.37.0
 open3d==0.19.0
