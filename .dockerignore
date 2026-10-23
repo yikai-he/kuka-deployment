@@ -6,6 +6,20 @@ __pycache__
 *.ipynb
 *.pdf
 *.tex
+.DS_Store
+
+# Secrets and host credentials must never enter the build context.
+.env
+.env.*
+.netrc
+.aws
+.ssh
+service-account*.json
+credentials*.json
+*.pem
+*.key
+id_rsa*
+id_ed25519*
 
 # Local environments, caches, and build products.
 .venv
@@ -22,11 +36,19 @@ runs
 # Private/large runtime inputs must be mounted read-only, not copied into images.
 data
 datasets
+recordings
+episodes
 results
 outputs
 artifacts
 checkpoints
 experiments
+fp_output
+comparison_output
+debug
+FoundationPose
+foundationpose_weights
+weights
 models/*.pt
 models/*.pth
 models/*.ckpt
@@ -47,3 +69,8 @@ models/*.stl
 *.avi
 *.mkv
 *.log
+*.tmp
+*.tar
+*.tar.gz
+*.tgz
+*.zip
