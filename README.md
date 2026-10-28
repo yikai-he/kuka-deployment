@@ -93,6 +93,9 @@ Depth consistency is always recorded as `PASSED`, `FAILED`, or `UNAVAILABLE`:
 - `configs/perception_v7_red_cube.yaml` contains the original v7 red-cube defaults,
   including 0.30 YOLO confidence, 2 cm jump, two-frame cooldown, physical size
   range 1.5–8 cm, 0.35 depth ratio, and permissive `allow` depth policy.
+- `configs/perception_v7_red_cube_drift_experimental.yaml` preserves those values
+  and opts into periodic YOLO/CAD-center consistency checks. It is experimental;
+  the original v7 profile and historical results remain the comparison baseline.
 
 Important legacy mapping:
 
@@ -133,6 +136,44 @@ streak, cooldown, recovery attempt/success, depth status/residual, registration
 centroid error, and selected-candidate information. Per-frame pose text files are
 profile-controlled. `--save-visualization` enables the optional status video; debug
 images and video are never required.
+
+### Experimental gradual-drift recovery
+
+The optional drift check runs YOLO only every `interval_frames` during otherwise
+valid tracking. It transforms the CAD bounding-box center from native object
+coordinates through `T_camera_object`, projects it with `K`, and compares it with
+the selected mask's image centroid. Only reliable detections at or above
+`min_detection_confidence` count. Missing, low-confidence, or unusable detections
+are inconclusive and reset the consecutive-failure streak. Pixel error must be
+strictly greater than `max_center_error_px` for `consecutive_failures` checks before
+the tracked pose is rejected and the same mask is reused for same-frame recovery.
+
+Copy both profiles to ignored local files and apply identical workstation asset
+paths. First preserve a fresh baseline, then run the experimental profile:
+
+```bash
+python3 scripts/replay_perception.py \
+  --input /data/kuka/episode_000 \
+  --config configs/local/perception_v7_effective.yaml \
+  --output /data/kuka/results/v7_preserved \
+  --save-reproducibility-manifest
+
+python3 scripts/replay_perception.py \
+  --input /data/kuka/episode_000 \
+  --config configs/local/perception_v7_drift_effective.yaml \
+  --output /data/kuka/results/v7_drift_experimental \
+  --save-reproducibility-manifest
+
+python3 scripts/compare_perception_runs.py \
+  --legacy /data/kuka/results/v7_preserved \
+  --modular /data/kuka/results/v7_drift_experimental \
+  --output /data/kuka/results/v7_drift_comparison
+```
+
+New CSV fields are `drift_check_performed`, `drift_pixel_error`,
+`drift_detection_confidence`, `drift_reason`, `drift_failure_streak`, and
+`drift_recovery_outcome`. GPU behavior remains unvalidated until this profile is
+run on `yxt-X99`; CPU tests exercise only geometry and state transitions.
 
 ### Qualitative CAD pose overlays
 

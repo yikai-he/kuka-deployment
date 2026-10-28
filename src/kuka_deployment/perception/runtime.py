@@ -13,6 +13,7 @@ from .foundationpose import FoundationPoseConfig, FoundationPoseEstimator
 from .interfaces import ObjectPoseEstimate, RGBDFrame
 from .segmenter import MaskValidationConfig, RedCubeCandidateConfig, YoloSegmenter
 from .tracker import (
+    DriftCheckConfig,
     PerceptionPipeline,
     PipelineConfig,
     PoseValidationConfig,
@@ -27,6 +28,7 @@ def build_pipeline(
     models, validation = config["models"], config["validation"]
     segmentation = config["segmentation"]
     recovery = config["recovery"]
+    drift = config.get("drift_check", {})
     candidate_values = dict(config["red_cube"])
     candidate_values.update(
         {
@@ -60,6 +62,17 @@ def build_pipeline(
             track_iterations=int(models["track_iterations"]),
         )
     )
+    drift_values = dict(drift)
+    if (
+        bool(drift_values.get("enabled", False))
+        and "cad_center_object_m" not in drift_values
+    ):
+        import trimesh
+
+        mesh = trimesh.load(str(Path(models["mesh"]).resolve()), force="mesh")
+        drift_values["cad_center_object_m"] = tuple(
+            np.asarray(mesh.bounds, dtype=float).mean(axis=0).tolist()
+        )
     return PerceptionPipeline(
         str(config["object_id"]),
         segmenter,
@@ -71,6 +84,7 @@ def build_pipeline(
                 enabled=bool(recovery["enabled"]),
                 cooldown_frames=int(recovery["cooldown_frames"]),
             ),
+            drift_check=DriftCheckConfig(**drift_values),
         ),
         initial_mask=initial_mask,
     )
@@ -141,5 +155,19 @@ def result_record(
         "lost_streak": pipeline.last_diagnostics.get("lost_streak", 0),
         "cooldown_remaining": pipeline.last_diagnostics.get("cooldown_remaining", 0),
         "depth_check_status": pipeline.last_diagnostics.get("depth_check_status"),
+        "drift_check_performed": pipeline.last_diagnostics.get(
+            "drift_check_performed", False
+        ),
+        "drift_pixel_error": pipeline.last_diagnostics.get("drift_pixel_error"),
+        "drift_detection_confidence": pipeline.last_diagnostics.get(
+            "drift_detection_confidence"
+        ),
+        "drift_reason": pipeline.last_diagnostics.get("drift_reason"),
+        "drift_failure_streak": pipeline.last_diagnostics.get(
+            "drift_failure_streak", 0
+        ),
+        "drift_recovery_outcome": pipeline.last_diagnostics.get(
+            "drift_recovery_outcome"
+        ),
     }
     return record

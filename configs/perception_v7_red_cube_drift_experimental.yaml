@@ -1,0 +1,58 @@
+# Experimental profile: legacy-v7 settings plus periodic YOLO/CAD-center drift checks.
+# The original configs/perception_v7_red_cube.yaml remains the immutable baseline.
+object_id: red_cube
+source: {min_depth_m: 0.1, max_depth_m: 3.0}
+models:
+  yolo_weights: /path/to/red_cube_yoloseg_best.pt
+  foundationpose_repository: /path/to/FoundationPose
+  foundationpose_weights: /path/to/FoundationPose/weights
+  mesh: /path/to/red_cube.obj
+  register_iterations: 5
+  track_iterations: 2
+segmentation:
+  confidence: 0.30
+  iou: 0.50
+  image_size: 640
+  device: "0"
+  max_detections: 5
+  class_id: 0
+red_cube:
+  target_size_m: 0.040
+  min_object_size_m: 0.015
+  max_object_size_m: 0.080
+  min_component_area: 20
+  max_aspect_ratio: 2.5
+  min_candidate_depth_ratio: 0.35
+validation:
+  mask: {min_pixels: 20, max_pixels: 100000, min_valid_depth_fraction: 0.35,
+         min_median_depth_m: 0.1, max_median_depth_m: 3.0,
+         min_fill_ratio: 0.0, max_aspect_ratio: 2.5}
+  pose:
+    min_z_m: 0.1
+    max_z_m: 3.0
+    max_translation_step_m: 0.020
+    max_rotation_step_deg: null
+    center_depth_residual_m: 0.060
+    center_depth_window_px: 7
+    register_mask_center_max_m: 0.070
+    depth_unavailable_policy: allow
+    se3_atol: 1.0e-5
+recovery:
+  enabled: true
+  cooldown_frames: 2
+  recovery_hint_weight: 0.35
+  recovery_hint_max_px: 150.0
+  lost_hint_expand_px: 30.0
+  hint_fallback_lost_streak: 3
+  allow_initial_mask_fallback: true
+  initial_mask: masks/{frame_id}.png
+drift_check:
+  enabled: true
+  interval_frames: 10
+  max_center_error_px: 30.0
+  min_detection_confidence: 0.50
+  consecutive_failures: 2
+  # If omitted, runtime computes the CAD geometric center as the midpoint of
+  # mesh.bounds in native object coordinates. Never substitute pose translation
+  # unless the CAD origin is known to coincide with that center.
+outputs: {save_pose_files: true, save_visualization: false}

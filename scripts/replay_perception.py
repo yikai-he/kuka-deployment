@@ -129,6 +129,22 @@ def main() -> int:
                 "fallback_without_hint": pipeline.last_diagnostics.get(
                     "fallback_without_hint", False
                 ),
+                "drift_check_performed": pipeline.last_diagnostics.get(
+                    "drift_check_performed", False
+                ),
+                "drift_pixel_error": pipeline.last_diagnostics.get(
+                    "drift_pixel_error"
+                ),
+                "drift_detection_confidence": pipeline.last_diagnostics.get(
+                    "drift_detection_confidence"
+                ),
+                "drift_reason": pipeline.last_diagnostics.get("drift_reason"),
+                "drift_failure_streak": pipeline.last_diagnostics.get(
+                    "drift_failure_streak", 0
+                ),
+                "drift_recovery_outcome": pipeline.last_diagnostics.get(
+                    "drift_recovery_outcome"
+                ),
             }
             for r in range(4):
                 for c in range(4):

@@ -15,6 +15,7 @@ from .segmenter import (
     MaskValidationConfig,
     Segmentation,
     Segmenter,
+    analyze_mask_geometry,
     mask_rgbd_centroid,
     validate_mask,
 )
@@ -61,10 +62,36 @@ class RecoveryConfig:
 
 
 @dataclass(frozen=True)
+class DriftCheckConfig:
+    """Optional detector-to-CAD image-plane consistency check."""
+
+    enabled: bool = False
+    interval_frames: int = 10
+    max_center_error_px: float = 30.0
+    min_detection_confidence: float = 0.50
+    consecutive_failures: int = 2
+    cad_center_object_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def __post_init__(self) -> None:
+        if self.interval_frames <= 0:
+            raise ValueError("drift check interval_frames must be positive")
+        if self.max_center_error_px < 0:
+            raise ValueError("drift max_center_error_px must be non-negative")
+        if not 0 <= self.min_detection_confidence <= 1:
+            raise ValueError("drift min_detection_confidence must be in [0, 1]")
+        if self.consecutive_failures <= 0:
+            raise ValueError("drift consecutive_failures must be positive")
+        center = np.asarray(self.cad_center_object_m, dtype=float)
+        if center.shape != (3,) or not np.isfinite(center).all():
+            raise ValueError("cad_center_object_m must contain three finite values")
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     mask: MaskValidationConfig = field(default_factory=MaskValidationConfig)
     pose: PoseValidationConfig = field(default_factory=PoseValidationConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
+    drift_check: DriftCheckConfig = field(default_factory=DriftCheckConfig)
 
 
 def project_translation_to_pixel(
@@ -74,6 +101,18 @@ def project_translation_to_pixel(
     if not np.isfinite([x, y, z]).all() or z <= 1e-6:
         return None
     return float(K[0, 0] * x / z + K[0, 2]), float(K[1, 1] * y / z + K[1, 2])
+
+
+def project_object_point_to_pixel(
+    point_object: np.ndarray, T_camera_object: np.ndarray, K: np.ndarray
+) -> tuple[float, float] | None:
+    """Project an object-frame point through ``T_camera_object`` and ``K``."""
+    point = np.asarray(point_object, dtype=float)
+    transform = np.asarray(T_camera_object, dtype=float)
+    if point.shape != (3,) or transform.shape != (4, 4):
+        raise ValueError("object point and transform must have shapes (3,) and (4, 4)")
+    camera_point = transform[:3, :3] @ point + transform[:3, 3]
+    return project_translation_to_pixel(camera_point, K)
 
 
 def depth_patch_median(
@@ -213,6 +252,8 @@ class PerceptionPipeline:
         self._last_accepted_pose: np.ndarray | None = None
         self.lost_streak = 0
         self.cooldown_remaining = 0
+        self._tracked_frame_count = 0
+        self._drift_failure_streak = 0
         self.last_diagnostics: dict[str, Any] = {}
 
     def _result(
@@ -247,11 +288,15 @@ class PerceptionPipeline:
             return None
         return project_translation_to_pixel(self._last_accepted_pose[:3, 3], frame.K)
 
-    def _detect(self, frame: RGBDFrame) -> Segmentation | None:
+    def _detect(
+        self, frame: RGBDFrame, *, hint_uv: tuple[float, float] | None = None
+    ) -> Segmentation | None:
         contextual = getattr(self.segmenter, "detect_with_context", None)
+        if hint_uv is None:
+            hint_uv = self._hint_uv(frame)
         detection = (
             contextual(
-                frame, hint_uv=self._hint_uv(frame), lost_streak=self.lost_streak
+                frame, hint_uv=hint_uv, lost_streak=self.lost_streak
             )
             if contextual is not None
             else self.segmenter.detect(frame)
@@ -270,6 +315,7 @@ class PerceptionPipeline:
         self._last_accepted_pose = accepted.copy()
         self.lost_streak = 0
         self.cooldown_remaining = self.config.recovery.cooldown_frames
+        self._drift_failure_streak = 0
 
     def _enter_lost(self) -> None:
         self.state = TrackerState.LOST
@@ -363,12 +409,67 @@ class PerceptionPipeline:
     def try_reregister(self, frame: RGBDFrame) -> ObjectPoseEstimate:
         return self._register(frame, recovery=True)
 
+    def _drift_detection(
+        self, frame: RGBDFrame, candidate: np.ndarray
+    ) -> tuple[bool, Segmentation | None, str | None]:
+        """Return confirmed drift, reusable detection, and reason."""
+        config = self.config.drift_check
+        self.last_diagnostics["drift_check_performed"] = True
+        projected = project_object_point_to_pixel(
+            np.asarray(config.cad_center_object_m), candidate, frame.K
+        )
+        if projected is None:
+            self._drift_failure_streak = 0
+            self.last_diagnostics["drift_reason"] = "projected CAD center unavailable"
+            return False, None, None
+        detection = self._detect(frame, hint_uv=projected)
+        if detection is None:
+            self._drift_failure_streak = 0
+            self.last_diagnostics["drift_reason"] = "detection unavailable"
+            return False, None, None
+        self.last_diagnostics["drift_detection_confidence"] = detection.confidence
+        if detection.confidence < config.min_detection_confidence:
+            self._drift_failure_streak = 0
+            self.last_diagnostics[
+                "drift_reason"
+            ] = "detection confidence below threshold"
+            return False, detection, None
+        geometry = analyze_mask_geometry(detection.mask)
+        if geometry is None:
+            self._drift_failure_streak = 0
+            self.last_diagnostics["drift_reason"] = "detection center unavailable"
+            return False, detection, None
+        detected = geometry["center"]
+        error = float(
+            math.hypot(detected[0] - projected[0], detected[1] - projected[1])
+        )
+        self.last_diagnostics["drift_pixel_error"] = error
+        if error > config.max_center_error_px:
+            self._drift_failure_streak += 1
+            self.last_diagnostics["drift_reason"] = "detector/CAD center disagreement"
+        else:
+            self._drift_failure_streak = 0
+            self.last_diagnostics["drift_reason"] = None
+        self.last_diagnostics["drift_failure_streak"] = self._drift_failure_streak
+        confirmed = self._drift_failure_streak >= config.consecutive_failures
+        return confirmed, detection, (
+            "detector/CAD center disagreement exceeded configured threshold"
+            if confirmed
+            else None
+        )
+
     def process_frame(self, frame: RGBDFrame) -> ObjectPoseEstimate:
         self.last_diagnostics = {
             "recovery_attempted": False,
             "recovery_success": False,
             "depth_check_status": DepthCheckStatus.UNAVAILABLE.value,
             "failure_stage": None,
+            "drift_check_performed": False,
+            "drift_pixel_error": None,
+            "drift_detection_confidence": None,
+            "drift_reason": None,
+            "drift_failure_streak": self._drift_failure_streak,
+            "drift_recovery_outcome": None,
         }
         if self.state is TrackerState.UNINITIALIZED:
             return self._register(frame, recovery=False)
@@ -396,6 +497,18 @@ class PerceptionPipeline:
                 diagnostics=self.last_diagnostics,
             )
             failure_stage = "tracking_validation"
+            drift_detection = None
+            if not failed:
+                self._tracked_frame_count += 1
+                drift = self.config.drift_check
+                scheduled = self._tracked_frame_count % drift.interval_frames == 0
+                if drift.enabled and scheduled:
+                    failed, drift_detection, drift_reason = self._drift_detection(
+                        frame, candidate
+                    )
+                    if failed:
+                        reason = drift_reason
+                        failure_stage = "drift_validation"
         except Exception as exc:
             failed, reason = True, str(exc)
             failure_stage = "tracking_exception"
@@ -408,10 +521,22 @@ class PerceptionPipeline:
         if not self.config.recovery.enabled:
             self._enter_lost()
             self.last_diagnostics["failure_stage"] = failure_stage
+            if failure_stage == "drift_validation":
+                self.last_diagnostics["drift_recovery_outcome"] = "disabled"
             return self._result(
                 frame, TrackingStatus.TRACKING_FAILED, None, reason=reason
             )
-        recovered = self.try_reregister(frame)
+        if failure_stage == "drift_validation" and drift_detection is not None:
+            self.last_diagnostics["recovery_attempted"] = True
+            recovered = self._register_mask(
+                frame, drift_detection.mask, drift_detection.confidence, True
+            )
+        else:
+            recovered = self.try_reregister(frame)
+        if failure_stage == "drift_validation":
+            self.last_diagnostics["drift_recovery_outcome"] = (
+                "succeeded" if recovered.valid else "failed"
+            )
         if recovered.valid:
             return recovered
         combined = (
