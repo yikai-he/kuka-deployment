@@ -1,10 +1,14 @@
-"""Offline RGB-D sources producing the same :class:`RGBDFrame` contract."""
+"""Offline and live RGB-D sources producing the same :class:`RGBDFrame` contract."""
 
 from __future__ import annotations
 
 import json
+import threading
+import time
+from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import Protocol
 
 import numpy as np
 
@@ -14,6 +18,158 @@ from .rgbd import bgr_to_rgb, depth_to_metres
 
 class RGBDSource(Protocol):
     def __iter__(self) -> Iterator[RGBDFrame]: ...
+
+
+class CameraBackend(Protocol):
+    """Optional hardware adapter used by :class:`LiveFrameSource`.
+
+    ``read`` should block for at most ``timeout_s`` and return the most recent
+    aligned frame, or ``None`` for a temporary interruption. ``stop`` must be
+    idempotent and should unblock an in-progress ``read``.
+    """
+
+    def start(self) -> None: ...
+
+    def read(self, timeout_s: float) -> RGBDFrame | None: ...
+
+    def stop(self) -> None: ...
+
+
+class LiveFrameSource:
+    """Acquire camera frames continuously while retaining only the latest frame.
+
+    Acquisition runs in one background thread so slow inference cannot create an
+    unbounded queue. Frames overwritten before consumption are counted in
+    ``dropped_frames``. Hardware-specific SDKs belong in external backend plugins.
+    """
+
+    def __init__(
+        self,
+        backend: CameraBackend,
+        *,
+        read_timeout_s: float = 0.25,
+        retry_delay_s: float = 0.01,
+        startup_timeout_s: float = 5.0,
+        shutdown_timeout_s: float = 2.0,
+    ) -> None:
+        for name, value in (
+            ("read_timeout_s", read_timeout_s),
+            ("retry_delay_s", retry_delay_s),
+            ("startup_timeout_s", startup_timeout_s),
+            ("shutdown_timeout_s", shutdown_timeout_s),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        self.backend = backend
+        self.read_timeout_s = read_timeout_s
+        self.retry_delay_s = retry_delay_s
+        self.startup_timeout_s = startup_timeout_s
+        self.shutdown_timeout_s = shutdown_timeout_s
+        self.dropped_frames = 0
+        self._condition = threading.Condition()
+        self._stop_event = threading.Event()
+        self._started_event = threading.Event()
+        self._backend_stop_lock = threading.Lock()
+        self._backend_stopped = False
+        self._thread: threading.Thread | None = None
+        self._latest: RGBDFrame | None = None
+        self._latest_pending = False
+        self._ended = False
+        self._error: BaseException | None = None
+        self._startup_error: BaseException | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._acquire, name="rgbd-camera-acquisition", daemon=True
+        )
+        self._thread.start()
+        if not self._started_event.wait(self.startup_timeout_s):
+            self.close()
+            raise TimeoutError("camera backend initialization timed out")
+        if self._startup_error is not None:
+            error = self._startup_error
+            self.close()
+            raise RuntimeError("camera backend initialization failed") from error
+
+    def _stop_backend_once(self) -> None:
+        with self._backend_stop_lock:
+            if not self._backend_stopped:
+                self._backend_stopped = True
+                self.backend.stop()
+
+    def _acquire(self) -> None:
+        try:
+            try:
+                self.backend.start()
+            except BaseException as exc:
+                self._startup_error = exc
+                self._error = exc
+                return
+            finally:
+                self._started_event.set()
+            while not self._stop_event.is_set():
+                try:
+                    frame = self.backend.read(self.read_timeout_s)
+                except StopIteration:
+                    break
+                if frame is None:
+                    self._stop_event.wait(self.retry_delay_s)
+                    continue
+                if not isinstance(frame, RGBDFrame):
+                    raise TypeError("camera backend read() must return RGBDFrame or None")
+                if frame.acquisition_monotonic_ns is None:
+                    frame = replace(frame, acquisition_monotonic_ns=time.monotonic_ns())
+                with self._condition:
+                    if self._latest_pending:
+                        self.dropped_frames += 1
+                    self._latest = frame
+                    self._latest_pending = True
+                    self._condition.notify_all()
+        except BaseException as exc:
+            self._error = exc
+        finally:
+            try:
+                self._stop_backend_once()
+            except BaseException as exc:
+                if self._error is None:
+                    self._error = exc
+            with self._condition:
+                self._ended = True
+                self._condition.notify_all()
+
+    def __iter__(self) -> Iterator[RGBDFrame]:
+        self.start()
+        while True:
+            with self._condition:
+                self._condition.wait_for(
+                    lambda: self._latest_pending or self._ended
+                )
+                if self._latest_pending:
+                    assert self._latest is not None
+                    frame = self._latest
+                    self._latest_pending = False
+                elif self._error is not None:
+                    raise RuntimeError("camera acquisition failed") from self._error
+                else:
+                    return
+            yield frame
+
+    def close(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._stop_backend_once()
+            self._thread.join(self.shutdown_timeout_s)
+            if self._thread.is_alive():
+                raise TimeoutError("camera acquisition thread did not stop")
+
+    def __enter__(self) -> LiveFrameSource:
+        self.start()
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.close()
 
 
 def _cv2():
@@ -47,7 +203,9 @@ def _load_camera(path: Path) -> tuple[np.ndarray, float, str, dict[str, int]]:
 def _numeric_pngs(directory: Path) -> dict[str, Path]:
     if not directory.is_dir():
         raise FileNotFoundError(directory)
-    result = {path.stem: path for path in directory.glob("*.png") if path.stem.isdigit()}
+    result = {
+        path.stem: path for path in directory.glob("*.png") if path.stem.isdigit()
+    }
     if not result:
         raise ValueError(f"no numeric PNG frames in {directory}")
     return result
@@ -59,34 +217,51 @@ class RecordedSequenceSource:
     RGB/depth ID sets must match exactly: missing frames are errors, not omissions.
     """
 
-    def __init__(self, root: str | Path, *, min_depth_m: float = 0.001,
-                 max_depth_m: float = 3.0) -> None:
+    def __init__(
+        self, root: str | Path, *, min_depth_m: float = 0.001, max_depth_m: float = 3.0
+    ) -> None:
         self.root = Path(root)
         self.min_depth_m = min_depth_m
         self.max_depth_m = max_depth_m
-        self.K, self.scale, self.frame_id, self.timestamps = _load_camera(self.root / "camera.json")
+        self.K, self.scale, self.frame_id, self.timestamps = _load_camera(
+            self.root / "camera.json"
+        )
         self.rgb_paths = _numeric_pngs(self.root / "rgb")
         self.depth_paths = _numeric_pngs(self.root / "depth")
         if self.rgb_paths.keys() != self.depth_paths.keys():
             missing_depth = sorted(self.rgb_paths.keys() - self.depth_paths.keys())
             missing_rgb = sorted(self.depth_paths.keys() - self.rgb_paths.keys())
-            raise ValueError(f"unpaired frames: missing_depth={missing_depth}, missing_rgb={missing_rgb}")
+            raise ValueError(
+                f"unpaired frames: missing_depth={missing_depth}, missing_rgb={missing_rgb}"
+            )
         self.ids = sorted(self.rgb_paths, key=int)
 
     def __iter__(self) -> Iterator[RGBDFrame]:
         cv2 = _cv2()
         for sequence_number, identifier in enumerate(self.ids):
             bgr = cv2.imread(str(self.rgb_paths[identifier]), cv2.IMREAD_COLOR)
-            raw_depth = cv2.imread(str(self.depth_paths[identifier]), cv2.IMREAD_UNCHANGED)
+            raw_depth = cv2.imread(
+                str(self.depth_paths[identifier]), cv2.IMREAD_UNCHANGED
+            )
             if bgr is None or raw_depth is None:
                 raise ValueError(f"could not decode frame {identifier}")
             yield RGBDFrame(
                 rgb=bgr_to_rgb(bgr),
-                depth_m=depth_to_metres(raw_depth, self.scale, min_depth_m=self.min_depth_m,
-                                        max_depth_m=self.max_depth_m),
-                K=self.K.copy(), frame_number=int(identifier),
-                timestamp_ns=self.timestamps.get(identifier), frame_id=self.frame_id,
+                depth_m=depth_to_metres(
+                    raw_depth,
+                    self.scale,
+                    min_depth_m=self.min_depth_m,
+                    max_depth_m=self.max_depth_m,
+                ),
+                K=self.K.copy(),
+                frame_number=int(identifier),
+                timestamp_ns=self.timestamps.get(identifier),
+                frame_id=self.frame_id,
             )
+
+
+class OfflineFrameSource(RecordedSequenceSource):
+    """Mode-oriented name for the backward-compatible recorded sequence source."""
 
 
 class VideoDepthSource:
@@ -96,9 +271,16 @@ class VideoDepthSource:
     "timestamp_ns": null}, ...]``. Video presentation times are recorded separately.
     """
 
-    def __init__(self, video: str | Path, depth_dir: str | Path, camera_json: str | Path,
-                 correspondence_json: str | Path, *, min_depth_m: float = 0.001,
-                 max_depth_m: float = 3.0) -> None:
+    def __init__(
+        self,
+        video: str | Path,
+        depth_dir: str | Path,
+        camera_json: str | Path,
+        correspondence_json: str | Path,
+        *,
+        min_depth_m: float = 0.001,
+        max_depth_m: float = 3.0,
+    ) -> None:
         self.video, self.depth_dir = Path(video), Path(depth_dir)
         self.K, self.scale, self.frame_id, _ = _load_camera(Path(camera_json))
         self.min_depth_m, self.max_depth_m = min_depth_m, max_depth_m
@@ -107,13 +289,20 @@ class VideoDepthSource:
         if not isinstance(self.mapping, list) or not self.mapping:
             raise ValueError("correspondence must be a non-empty JSON list")
         video_ids = [entry.get("video_frame") for entry in self.mapping]
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in video_ids):
-            raise ValueError("every correspondence needs a non-negative integer video_frame")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in video_ids
+        ):
+            raise ValueError(
+                "every correspondence needs a non-negative integer video_frame"
+            )
         if video_ids != sorted(video_ids) or len(video_ids) != len(set(video_ids)):
             raise ValueError("video_frame values must be unique and ascending")
         for entry in self.mapping:
             if not isinstance(entry.get("depth"), str):
-                raise ValueError("every correspondence needs an explicit depth filename")
+                raise ValueError(
+                    "every correspondence needs an explicit depth filename"
+                )
             if not (self.depth_dir / entry["depth"]).is_file():
                 raise FileNotFoundError(self.depth_dir / entry["depth"])
 
@@ -132,18 +321,28 @@ class VideoDepthSource:
                     current += 1
                     if not ok:
                         raise ValueError(f"video ended before mapped frame {target}")
-                raw = cv2.imread(str(self.depth_dir / entry["depth"]), cv2.IMREAD_UNCHANGED)
+                raw = cv2.imread(
+                    str(self.depth_dir / entry["depth"]), cv2.IMREAD_UNCHANGED
+                )
                 if raw is None:
                     raise ValueError(f"could not decode depth {entry['depth']}")
                 timestamp = entry.get("timestamp_ns")
-                presentation_ns = round(float(capture.get(cv2.CAP_PROP_POS_MSEC)) * 1_000_000)
+                presentation_ns = round(
+                    float(capture.get(cv2.CAP_PROP_POS_MSEC)) * 1_000_000
+                )
                 yield RGBDFrame(
                     rgb=bgr_to_rgb(bgr),
-                    depth_m=depth_to_metres(raw, self.scale, min_depth_m=self.min_depth_m,
-                                            max_depth_m=self.max_depth_m),
-                    K=self.K.copy(), frame_number=target,
+                    depth_m=depth_to_metres(
+                        raw,
+                        self.scale,
+                        min_depth_m=self.min_depth_m,
+                        max_depth_m=self.max_depth_m,
+                    ),
+                    K=self.K.copy(),
+                    frame_number=target,
                     timestamp_ns=None if timestamp is None else int(timestamp),
-                    presentation_timestamp_ns=presentation_ns, frame_id=self.frame_id,
+                    presentation_timestamp_ns=presentation_ns,
+                    frame_id=self.frame_id,
                 )
         finally:
             capture.release()
@@ -151,4 +350,6 @@ class VideoDepthSource:
 
 class RGBOnlyVideoSource:
     def __init__(self, *_args, **_kwargs) -> None:
-        raise ValueError("RGB-only video has no metric depth and cannot drive FoundationPose")
+        raise ValueError(
+            "RGB-only video has no metric depth and cannot drive FoundationPose"
+        )

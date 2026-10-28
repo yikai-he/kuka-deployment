@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-import os
 from pathlib import Path
-import sys
-from typing import Iterator, Protocol
+from typing import Protocol
 
 import numpy as np
 
@@ -55,17 +56,22 @@ class FoundationPoseEstimator:
             "track_input_dtypes": [],
             "output_dtypes": [],
         }
-        for name, path in (("repository", config.repository), ("mesh", config.mesh),
-                           ("weights", config.weights)):
+        for name, path in (
+            ("repository", config.repository),
+            ("mesh", config.mesh),
+            ("weights", config.weights),
+        ):
             if not path.exists():
                 raise FileNotFoundError(f"FoundationPose {name} path not found: {path}")
         if config.register_iterations <= 0 or config.track_iterations <= 0:
             raise ValueError("FoundationPose iteration counts must be positive")
         try:
-            import trimesh
             import nvdiffrast.torch as dr
+            import trimesh
         except ImportError as exc:  # pragma: no cover - GPU environment only
-            raise RuntimeError("FoundationPose GPU dependencies are unavailable") from exc
+            raise RuntimeError(
+                "FoundationPose GPU dependencies are unavailable"
+            ) from exc
 
         repository = str(config.repository.resolve())
         if repository not in sys.path:
@@ -74,42 +80,68 @@ class FoundationPoseEstimator:
         os.environ["FOUNDATIONPOSE_WEIGHT_DIR"] = str(config.weights.resolve())
         try:
             with _working_directory(config.repository):
-                from estimater import FoundationPose, PoseRefinePredictor, ScorePredictor
+                from estimater import (
+                    FoundationPose,
+                    PoseRefinePredictor,
+                    ScorePredictor,
+                )
+
                 mesh = trimesh.load(str(config.mesh.resolve()), force="mesh")
                 # Trimesh deliberately stores geometry as float64, including values
                 # assigned from float32 arrays.  Keep that native representation for
                 # the mesh object while passing explicit float32 model arrays across
                 # the FoundationPose boundary.
                 model_pts = np.ascontiguousarray(mesh.vertices, dtype=np.float32)
-                model_normals = np.ascontiguousarray(mesh.vertex_normals, dtype=np.float32)
+                model_normals = np.ascontiguousarray(
+                    mesh.vertex_normals, dtype=np.float32
+                )
                 scorer, refiner = ScorePredictor(), PoseRefinePredictor()
                 glctx = dr.RasterizeCudaContext()
                 self._estimator = FoundationPose(
-                    model_pts=model_pts, model_normals=model_normals, mesh=mesh,
-                    scorer=scorer, refiner=refiner, debug_dir=str(config.debug_dir),
-                    debug=0, glctx=glctx,
+                    model_pts=model_pts,
+                    model_normals=model_normals,
+                    mesh=mesh,
+                    scorer=scorer,
+                    refiner=refiner,
+                    debug_dir=str(config.debug_dir),
+                    debug=0,
+                    glctx=glctx,
                 )
                 self._estimator.diameter = np.float32(self._estimator.diameter)
-                self.dtype_diagnostics.update({
-                    "mesh_vertices_dtype": str(mesh.vertices.dtype),
-                    "mesh_vertex_normals_dtype": str(mesh.vertex_normals.dtype),
-                    "model_pts_dtype": str(model_pts.dtype),
-                    "model_normals_dtype": str(model_normals.dtype),
-                    "diameter_dtype": str(np.asarray(self._estimator.diameter).dtype),
-                })
+                self.dtype_diagnostics.update(
+                    {
+                        "mesh_vertices_dtype": str(mesh.vertices.dtype),
+                        "mesh_vertex_normals_dtype": str(mesh.vertex_normals.dtype),
+                        "model_pts_dtype": str(model_pts.dtype),
+                        "model_normals_dtype": str(model_normals.dtype),
+                        "diameter_dtype": str(
+                            np.asarray(self._estimator.diameter).dtype
+                        ),
+                    }
+                )
         except Exception as exc:
             raise RuntimeError(f"FoundationPose initialization failed: {exc}") from exc
 
     def register(self, frame: RGBDFrame, mask: np.ndarray) -> np.ndarray:
         try:
-            self.dtype_diagnostics["register_calls"] = int(
-                self.dtype_diagnostics["register_calls"]) + 1
-            self.dtype_diagnostics["register_input_dtypes"].append({
-                "K": str(frame.K.dtype), "rgb": str(frame.rgb.dtype),
-                "depth": str(frame.depth_m.dtype), "mask": str(np.asarray(mask).dtype),
-            })
-            pose = self._estimator.register(K=frame.K, rgb=frame.rgb, depth=frame.depth_m,
-                                            ob_mask=mask, iteration=self.config.register_iterations)
+            self.dtype_diagnostics["register_calls"] = (
+                int(self.dtype_diagnostics["register_calls"]) + 1
+            )
+            self.dtype_diagnostics["register_input_dtypes"].append(
+                {
+                    "K": str(frame.K.dtype),
+                    "rgb": str(frame.rgb.dtype),
+                    "depth": str(frame.depth_m.dtype),
+                    "mask": str(np.asarray(mask).dtype),
+                }
+            )
+            pose = self._estimator.register(
+                K=frame.K,
+                rgb=frame.rgb,
+                depth=frame.depth_m,
+                ob_mask=mask,
+                iteration=self.config.register_iterations,
+            )
             result = np.asarray(pose, dtype=np.float32).reshape(4, 4)
             self.dtype_diagnostics["output_dtypes"].append(str(result.dtype))
             return result
@@ -118,13 +150,22 @@ class FoundationPoseEstimator:
 
     def track(self, frame: RGBDFrame) -> np.ndarray:
         try:
-            self.dtype_diagnostics["track_calls"] = int(self.dtype_diagnostics["track_calls"]) + 1
-            self.dtype_diagnostics["track_input_dtypes"].append({
-                "K": str(frame.K.dtype), "rgb": str(frame.rgb.dtype),
-                "depth": str(frame.depth_m.dtype),
-            })
-            pose = self._estimator.track_one(rgb=frame.rgb, depth=frame.depth_m, K=frame.K,
-                                             iteration=self.config.track_iterations)
+            self.dtype_diagnostics["track_calls"] = (
+                int(self.dtype_diagnostics["track_calls"]) + 1
+            )
+            self.dtype_diagnostics["track_input_dtypes"].append(
+                {
+                    "K": str(frame.K.dtype),
+                    "rgb": str(frame.rgb.dtype),
+                    "depth": str(frame.depth_m.dtype),
+                }
+            )
+            pose = self._estimator.track_one(
+                rgb=frame.rgb,
+                depth=frame.depth_m,
+                K=frame.K,
+                iteration=self.config.track_iterations,
+            )
             result = np.asarray(pose, dtype=np.float32).reshape(4, 4)
             self.dtype_diagnostics["output_dtypes"].append(str(result.dtype))
             return result

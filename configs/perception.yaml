@@ -3,6 +3,9 @@
 object_id: red_cube
 source: {min_depth_m: 0.001, max_depth_m: 3.0}
 models:
+  # Copy this profile to ignored configs/local/ and replace these paths there.
+  # The mesh is loaded without scaling/recentering: vertices must be metres and
+  # its native origin/axes define the returned object frame.
   yolo_weights: /path/to/red_cube_yolo11n_seg.pt
   foundationpose_repository: /path/to/FoundationPose
   foundationpose_weights: /path/to/FoundationPose/weights

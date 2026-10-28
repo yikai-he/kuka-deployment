@@ -33,6 +33,11 @@ id_ed25519*
 kuka_deployment_refactored*.ipynb
 *~
 
+# Machine-specific effective configuration (tracked YAML files are templates)
+configs/local/
+configs/*_local.yaml
+configs/*_effective.yaml
+
 # Externally supplied models, meshes, and FoundationPose checkouts
 models/**
 !models/README.md
@@ -66,6 +71,12 @@ fp_output/
 comparison_output/
 debug/
 tracking*.mp4
+poses.csv
+metrics.json
+preflight.json
+reproducibility_manifest.json
+baseline_comparison.json
+baseline_comparison.md
 *.npy
 *.npz
 *.mp4

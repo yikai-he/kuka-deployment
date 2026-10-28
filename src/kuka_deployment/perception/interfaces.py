@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -32,9 +31,10 @@ class RGBDFrame:
     depth_m: npt.NDArray[np.float32]
     K: npt.NDArray[np.floating]
     frame_number: int
-    timestamp_ns: Optional[int]
+    timestamp_ns: int | None
     frame_id: str
-    presentation_timestamp_ns: Optional[int] = None
+    presentation_timestamp_ns: int | None = None
+    acquisition_monotonic_ns: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.rgb, np.ndarray) or self.rgb.dtype != np.uint8:
@@ -46,7 +46,9 @@ class RGBDFrame:
         if self.depth_m.ndim != 2 or self.depth_m.shape != self.rgb.shape[:2]:
             raise ValueError("depth and RGB image dimensions must match")
         if not np.all(np.isfinite(self.depth_m)) or np.any(self.depth_m < 0):
-            raise ValueError("depth_m must be finite and non-negative; use 0 for invalid depth")
+            raise ValueError(
+                "depth_m must be finite and non-negative; use 0 for invalid depth"
+            )
         K = np.asarray(self.K)
         if K.shape != (3, 3) or K.dtype.kind != "f" or not np.all(np.isfinite(K)):
             raise ValueError("K must be a finite 3x3 floating-point matrix")
@@ -54,8 +56,11 @@ class RGBDFrame:
             raise ValueError("camera focal lengths must be positive")
         if isinstance(self.frame_number, bool) or self.frame_number < 0:
             raise ValueError("frame_number must be a non-negative integer")
-        for name, value in (("timestamp_ns", self.timestamp_ns),
-                            ("presentation_timestamp_ns", self.presentation_timestamp_ns)):
+        for name, value in (
+            ("timestamp_ns", self.timestamp_ns),
+            ("presentation_timestamp_ns", self.presentation_timestamp_ns),
+            ("acquisition_monotonic_ns", self.acquisition_monotonic_ns),
+        ):
             if value is not None and (isinstance(value, bool) or value < 0):
                 raise ValueError(f"{name} must be None or a non-negative integer")
         if not self.frame_id:
@@ -72,14 +77,14 @@ class ObjectPoseEstimate:
     """
 
     object_id: str
-    timestamp_ns: Optional[int]
+    timestamp_ns: int | None
     frame_id: str
-    T_frame_object: Optional[npt.NDArray[np.floating]]
+    T_frame_object: npt.NDArray[np.floating] | None
     valid: bool
     status: TrackingStatus
     source_frame_number: int
-    detector_confidence: Optional[float] = None
-    failure_reason: Optional[str] = None
+    detector_confidence: float | None = None
+    failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.object_id or not self.frame_id:
@@ -88,12 +93,16 @@ class ObjectPoseEstimate:
             raise ValueError("timestamp_ns must be None or non-negative")
         if self.source_frame_number < 0:
             raise ValueError("source_frame_number must be non-negative")
-        if self.detector_confidence is not None and not 0 <= self.detector_confidence <= 1:
+        if (
+            self.detector_confidence is not None
+            and not 0 <= self.detector_confidence <= 1
+        ):
             raise ValueError("detector_confidence must be in [0, 1]")
         if self.valid:
             if self.T_frame_object is None:
                 raise ValueError("a valid estimate requires a pose")
             from .transforms import validate_transform
+
             validate_transform(self.T_frame_object)
             if self.failure_reason is not None:
                 raise ValueError("a valid estimate cannot have a failure_reason")

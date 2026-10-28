@@ -21,6 +21,7 @@ def test_valid_frame_allows_unavailable_capture_timestamp():
     {"depth_m": np.ones((3, 2), np.float32)},
     {"K": np.diag([0.0, 1.0, 1.0]).astype(np.float32)},
     {"timestamp_ns": -1},
+    {"acquisition_monotonic_ns": -1},
 ])
 def test_invalid_frame_inputs_are_rejected(changes):
     with pytest.raises((TypeError, ValueError)):

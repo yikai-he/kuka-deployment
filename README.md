@@ -1,9 +1,11 @@
-# Phase 1.1: Modular Offline RGB-D Perception
+# Modular Offline and Live-Ready RGB-D Perception
 
-This ROS-free package processes aligned RGB and metric depth with YOLO-Seg and an
-unmodified FoundationPose checkout. It contains no live camera, robot, gripper, or
-policy code. The Phase 1 contracts remain unchanged: `process_frame(frame)` accepts
-an `RGBDFrame` and returns an `ObjectPoseEstimate`.
+This ROS-free package processes aligned RGB and metric depth with YOLO-Seg and a
+pinned FoundationPose checkout with one explicit dtype compatibility patch. Offline
+dataset replay is implemented, along with a camera-agnostic live acquisition
+interface and CLI. No hardware-specific camera driver, robot, gripper, or policy
+code is included. The Phase 1 contract remains unchanged: `process_frame(frame)`
+accepts an `RGBDFrame` and returns an `ObjectPoseEstimate`.
 
 ## Provenance
 
@@ -14,8 +16,12 @@ The recovery behavior was ported from these preserved workspace references:
 - `../FoundationPose_KUKA_clean(2).ipynb`
 
 The v7 notebook identifies FoundationPose revision
-`a1b694b83e633c2cb6115b9063d940a687759392`. No reference file is imported or
-modified by this package.
+`a1b694b83e633c2cb6115b9063d940a687759392`. Its successful registration path also
+contained the one-line dtype conversion preserved in
+`docker/patches/foundationpose-utils-dtype.patch`. The application adapter keeps
+Trimesh storage unchanged but passes contiguous float32 model points and normals.
+The patch and adapter boundary are both retained until a clean-checkout GPU run
+proves that the upstream patch is unnecessary.
 
 ## Contracts and pose convention
 
@@ -26,6 +32,14 @@ time is stored separately. RGB/depth filename sets must match exactly.
 `T_frame_object` maps object-frame points into the declared camera `frame_id`, with
 translation in metres. Invalid estimates contain `None`, and replay serializes them
 as NaN matrices. Detector confidence is YOLO confidence, never tracking confidence.
+
+The CAD file is not rescaled or recentered. Its vertices must already be in metres,
+and its native origin and axes define the object frame returned by FoundationPose.
+For the reference red cube, the expected mesh extents are approximately
+`[0.040, 0.040, 0.040]` metres. Record the mesh hash, bounds, origin convention, and
+axis convention with every laboratory run. Input RGB and depth must already be
+registered and rectified for the supplied camera matrix; distortion coefficients
+are not consumed by the offline source.
 
 ## v7 candidate selection
 
@@ -100,11 +114,17 @@ are documented rather than introduced as misleading active settings.
 
 ## Offline replay and outputs
 
+For the first RTX 3060 deployment, follow
+[`docs/LAB_OFFLINE_DEPLOYMENT.md`](docs/LAB_OFFLINE_DEPLOYMENT.md). In particular,
+copy a tracked profile into ignored `configs/local/` and change only external asset
+paths there; do not put workstation paths into the tracked templates.
+
 ```bash
 python3 scripts/replay_perception.py \
   --input /path/to/recorded_sequence \
-  --config configs/perception.yaml \
-  --output /path/to/results
+  --config configs/local/perception_v7_effective.yaml \
+  --output /path/to/new-empty-results \
+  --save-reproducibility-manifest
 ```
 
 Replay writes `poses.npy`, `poses.csv`, `metrics.json`, and the effective
@@ -114,14 +134,37 @@ centroid error, and selected-candidate information. Per-frame pose text files ar
 profile-controlled. `--save-visualization` enables the optional status video; debug
 images and video are never required.
 
+## Live RGB-D input
+
+Live mode uses the same model instances, state machine, validation, and recovery
+logic as offline replay. `LiveFrameSource` keeps one latest frame so inference does
+not accumulate a stale, unbounded camera queue. Camera hardware is selected through
+an optional `MODULE:FACTORY` plugin; no camera SDK is imposed on the core package.
+
+```bash
+python3 scripts/live_perception.py \
+  --config configs/perception.yaml \
+  --backend my_camera_plugin:create_camera \
+  --backend-config /path/to/camera.yaml \
+  --output /path/to/live_results \
+  --max-frames 500
+```
+
+See [`docs/LIVE_PERCEPTION.md`](docs/LIVE_PERCEPTION.md) for the backend contract,
+data and pose conventions, outputs, lifecycle behavior, and current limitations.
+
 ## CPU tests
 
 ```bash
-python3 -m pytest -q
+python3 -m pytest -q -m "not gpu_integration"
 ```
 
 Tests use mock YOLO/FoundationPose/video objects. They need no CUDA, model weights,
 ROS, RealSense, or KUKA hardware.
+
+The deselected `gpu_integration` test is the acceptance test for the real CUDA,
+FoundationPose, assets, and saved baseline. CPU success must not be reported as RTX
+3060 inference success.
 
 ## Side-by-side GPU regression (pending)
 
@@ -180,5 +223,6 @@ provided. The test uses this replay CLI rather than implementing a second pipeli
 - The modular source rejects unmatched frames; v7 silently intersected ID sets.
 - GPU parity is unverified because the dataset, cube mesh, perception weights,
   FoundationPose checkout, and CUDA environment are not available here.
-- RealSense `.bag`/live capture, rectification, ROS, policy inference, calibration,
-  and robot control remain outside Phase 1.1.
+- A generic live acquisition path is implemented, but RealSense `.bag` support,
+  hardware-specific camera backends, rectification, ROS, policy inference,
+  calibration, and robot control remain outside the current scope.
