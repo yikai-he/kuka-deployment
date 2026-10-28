@@ -7,6 +7,7 @@ import argparse
 import importlib
 import json
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     counts: Counter[str] = Counter()
     inference_times: list[float] = []
     end_to_end_times: list[float] = []
+    frame_ages: list[float] = []
     writer = None
     interrupted = False
     fatal_error = None
@@ -102,11 +104,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with result_path.open("w", encoding="utf-8") as output:
             for frame in source:
+                frame_age_ms = (
+                    None
+                    if frame.acquisition_monotonic_ns is None
+                    else (time.monotonic_ns() - frame.acquisition_monotonic_ns)
+                    / 1_000_000
+                )
                 result, inference_ms, end_to_end_ms = process_frame_timed(
                     pipeline,
                     frame,
                     synchronize=synchronize_cuda_if_available,
                 )
+                record["frame_age_at_inference_start_ms"] = frame_age_ms
                 record = result_record(
                     frame,
                     result,
@@ -123,9 +132,12 @@ def main(argv: list[str] | None = None) -> int:
                 inference_times.append(inference_ms)
                 if end_to_end_ms is not None:
                     end_to_end_times.append(end_to_end_ms)
+                if frame_age_ms is not None:
+                    frame_ages.append(frame_age_ms)
                 print(
                     f"frame={frame.frame_number} status={result.status.value} "
-                    f"valid={result.valid} inference_ms={inference_ms:.1f}"
+                    f"valid={result.valid} inference_ms={inference_ms:.1f} "
+                    f"frame_age_ms={frame_age_ms if frame_age_ms is not None else 'n/a'}"
                 )
                 if args.save_visualization:
                     image = cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2BGR)
@@ -177,6 +189,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "mean_end_to_end_ms": (
             None if not end_to_end_times else float(np.mean(end_to_end_times))
+        ),
+        "mean_frame_age_at_inference_start_ms": (
+            None if not frame_ages else float(np.mean(frame_ages))
         ),
         "events": {
             key: value

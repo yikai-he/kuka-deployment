@@ -16,9 +16,11 @@ validation, detection-guided recovery, and the offline output format remain the
 existing implementations. `LiveFrameSource`, the camera plugin contract, the live
 CLI, JSONL output, and live timing/statistics are implemented in this repository.
 
-No hardware-specific camera backend is bundled because the laboratory camera has
-not been selected. Camera SDK installation, physical camera validation, CUDA
-inference validation, ROS, calibration, and robot control remain future work.
+The laboratory ROS1 integration uses two local processes on the GPU host. The
+system Python 3.8 ROS bridge subscribes read-only to synchronized D455 topics and
+serves only its latest validated frame over a user-only Unix socket. The existing
+Python 3.11 inference process consumes that socket through the normal camera
+backend contract. ROS is never imported into the `metaworld` environment.
 
 ## RGB-D and pose contracts
 
@@ -56,7 +58,7 @@ Live acquisition is split into two small interfaces:
 - `LiveFrameSource` acquires in one background thread and holds exactly one pending
   frame. A newer frame replaces an unconsumed one and increments `dropped_frames`.
 
-An optional backend package should expose a factory accepting a configuration
+An optional backend package exposes a factory accepting a configuration
 mapping, for example:
 
 ```python
@@ -64,9 +66,25 @@ def create_camera(options):
     return MyCameraBackend(options)
 ```
 
-Hardware SDK imports should occur inside that plugin, not in the core package.
+Hardware/ROS imports occur inside the bridge, not in the core inference package.
 The factory is selected as `package.module:create_camera`. This keeps `--help`,
 offline replay, and CPU tests independent of camera drivers.
+
+### Local IPC contract
+
+The bridge listens on an `AF_UNIX` stream socket with mode `0600`. The inference
+client requests a frame using its last received sequence number and a timeout.
+The bridge returns either zero length when no newer frame exists or one
+length-prefixed packet containing a JSON metadata header followed by contiguous
+`uint8` RGB and little-endian `float32` metre-depth bytes. The header declares the
+schema version, dimensions, byte counts, `K`, optical frame ID, ROS capture stamp,
+source frame number, and host monotonic acquisition time. Packets and dimensions
+are validated before constructing `RGBDFrame`; pickle is not used.
+
+The bridge converts ROS optical coordinates without an axis transform: +X right,
++Y down, and +Z forward. Consequently FoundationPose continues to return
+`T_camera_object` in the color optical frame. Aligned depth and CameraInfo must
+have the same dimensions and optical `frame_id` as the RGB image.
 
 Optional camera settings can be added without changing the general perception
 profile:
@@ -107,6 +125,44 @@ python3 scripts/live_perception.py \
   --max-frames 500
 ```
 
+### ROS1 D455 bridge on `yxt-X99`
+
+The bridge and inference worker must run as the same user because the socket is
+created with mode `0600`. Start the read-only bridge with the system ROS Python:
+
+```bash
+cd /home/yxt/kuka-deployment
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://192.168.1.100:11311
+export ROS_IP=192.168.1.101
+/usr/bin/python3 scripts/ros_rgbd_bridge.py \
+  --rgb-topic /cam_1/color/image_raw \
+  --depth-topic /cam_1/aligned_depth_to_color/image_raw \
+  --camera-info-topic /cam_1/color/camera_info \
+  --socket /tmp/kuka_rgbd.sock \
+  --depth-scale 0.001 \
+  --min-depth-m 0.1 \
+  --max-depth-m 3.0
+```
+
+In a second terminal, run the unchanged modular pipeline in Python 3.11. Replace
+the local perception profile path with the already validated RTX 3060 profile:
+
+```bash
+cd /home/yxt/kuka-deployment
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate metaworld
+python scripts/live_perception.py \
+  --config configs/local/perception_v7_drift_effective.yaml \
+  --backend kuka_deployment.perception.ros_ipc:create_camera \
+  --backend-config configs/ros_ipc_backend.yaml \
+  --output /home/yxt/kuka-results/live_$(date +%Y%m%d_%H%M%S)
+```
+
+Start the bridge first. Ctrl+C stops either process cleanly; stopping inference
+closes its socket client, while stopping the bridge removes only its Unix socket.
+Neither process publishes ROS messages or contacts robot-control interfaces.
+
 `--save-visualization` writes `live_tracking.mp4`; it does not open a GUI. Ctrl+C
 stops acquisition and closes the backend. The live run writes:
 
@@ -117,6 +173,12 @@ stops acquisition and closes the backend. The live run writes:
 Each JSONL record includes capture timestamp, frame number and ID, object ID,
 validity, tracker status, recovery state, processing latency, end-to-end latency
 when measurable, and the `T_camera_object` matrix or `null`.
+
+`frame_age_at_inference_start_ms` measures bridge-to-inference age using the host
+monotonic clock. `end_to_end_ms` includes inference through the completed pose.
+`inference_ms` is CUDA-synchronized model/pipeline time. The bridge prints counts
+for synchronized frames published, frames overwritten before IPC delivery, and
+frames rejected during validation when it shuts down.
 
 ## Tracking and recovery
 
@@ -143,9 +205,12 @@ kernels, model weights, or physical pose accuracy.
 
 ## Current limitations
 
-- No camera-specific backend or driver is included or installed in Docker.
-- RGB/depth alignment and intrinsic calibration are a backend responsibility.
+- Hardware validation of the ROS bridge and D455 stream remains pending.
+- Approximate synchronization defaults to 30 ms and should be checked against the
+  observed topic timestamps before reducing or increasing it.
+- The bridge requires matching optical `frame_id` values for RGB, aligned depth,
+  and CameraInfo; it does not transform between coordinate frames.
 - Camera capture timestamps may use a device-specific clock domain.
 - There is no independent 6D ground truth or live-camera GPU validation.
-- The live JSONL interface is ROS-independent; no ROS publisher exists.
+- The live JSONL interface remains ROS-independent; no ROS publisher exists.
 - Camera-to-robot calibration and robot control are not implemented.

@@ -216,6 +216,11 @@ python3 scripts/live_perception.py \
   --max-frames 500
 ```
 
+For the read-only ROS1 Noetic D455 bridge and exact two-process commands on
+`yxt-X99`, see [`docs/LIVE_PERCEPTION.md`](docs/LIVE_PERCEPTION.md). ROS remains in
+system Python 3.8; FoundationPose remains in the Python 3.11 `metaworld`
+environment, connected only by a local latest-frame Unix socket.
+
 See [`docs/LIVE_PERCEPTION.md`](docs/LIVE_PERCEPTION.md) for the backend contract,
 data and pose conventions, outputs, lifecycle behavior, and current limitations.
 
@@ -289,6 +294,6 @@ provided. The test uses this replay CLI rather than implementing a second pipeli
 - The modular source rejects unmatched frames; v7 silently intersected ID sets.
 - GPU parity is unverified because the dataset, cube mesh, perception weights,
   FoundationPose checkout, and CUDA environment are not available here.
-- A generic live acquisition path is implemented, but RealSense `.bag` support,
-  hardware-specific camera backends, rectification, ROS, policy inference,
-  calibration, and robot control remain outside the current scope.
+- A read-only ROS1 D455 bridge is implemented but awaits hardware validation.
+  RealSense `.bag` support, camera-to-robot calibration, policy inference, and
+  robot control remain outside the current scope.

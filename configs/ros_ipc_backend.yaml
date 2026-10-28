@@ -1,0 +1,5 @@
+# Inference-side override consumed by live_perception.py --backend-config.
+# The Unix socket is local to yxt-X99 and is not exposed over the network.
+socket_path: /tmp/kuka_rgbd.sock
+connect_timeout_s: 10.0
+max_packet_bytes: 268435456
