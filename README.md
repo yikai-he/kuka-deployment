@@ -134,6 +134,31 @@ centroid error, and selected-candidate information. Per-frame pose text files ar
 profile-controlled. `--save-visualization` enables the optional status video; debug
 images and video are never required.
 
+### Qualitative CAD pose overlays
+
+Render overlays from an already completed replay without rerunning YOLO or
+FoundationPose:
+
+```bash
+python3 scripts/render_pose_overlays.py \
+  --input /data/kuka/episode_000 \
+  --results /data/kuka/results/rtx3060_full \
+  --mesh /data/kuka/models/red_cube.obj \
+  --output /data/kuka/results/rtx3060_full/overlays \
+  --frames 0,100,200,327,328,350,428 \
+  --video
+```
+
+This writes selected PNGs under `overlays/frames/` and, with `--video`, an
+`overlays/overlay.mp4`. The default assumes the stored RGB is rectified for `K`, as
+does the offline pipeline. Add `--use-distortion` only for raw imagery whose
+`camera.json` supplies OpenCV-order `D = [k1,k2,p1,p2,k3]` coefficients.
+
+The wireframe uses the CAD file's actual bounds, native origin, and native axes.
+`T_camera_object` maps those CAD/object points into the optical camera frame before
+projection. The overlay is qualitative: 100% valid poses and visually plausible
+projection do not establish physical 6D pose accuracy.
+
 ## Live RGB-D input
 
 Live mode uses the same model instances, state machine, validation, and recovery
